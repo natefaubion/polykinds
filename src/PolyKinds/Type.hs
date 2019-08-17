@@ -8,7 +8,9 @@ module PolyKinds.Type where
 import Data.Foldable (toList)
 import Data.Functor.Identity (Identity(..))
 import Data.Maybe (mapMaybe)
+import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
+import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 
 data Type
@@ -18,6 +20,7 @@ data Type
   | TypeUnknown Unknown
   | TypeVar Var
   | TypeName Name
+  | CtrName Name
   | TypeApp Type Type
   | KindApp Type Type
   | Forall BinderList Type
@@ -171,21 +174,34 @@ freeVars = S.fromDistinctAscList . mapMaybe go . toList . vars
     Left var -> Just var
     _ -> Nothing
 
-substUnknown :: Unknown -> Type -> Type -> Type
-substUnknown unk ty = rewrite $ \case
-  TypeUnknown unk' | unk' == unk -> ty
-  ty' -> ty'
+substUnknowns :: IM.IntMap Type -> Type -> Type
+substUnknowns unks = rewrite $ \case
+  TypeUnknown (Unknown i)
+    | Just ty <- IM.lookup i unks -> ty
+  ty -> ty
 
-substTypeName :: Name -> Type -> Type -> Type
-substTypeName name ty = rewrite $ \case
-  TypeName name' | name' == name -> ty
-  ty' -> ty'
+substTypeNames :: M.Map Name Type -> Type -> Type
+substTypeNames names = rewrite $ \case
+  TypeName name
+    | Just ty <- M.lookup name names -> ty
+  ty -> ty
 
 substVar :: Var -> Type -> Type -> Type
-substVar var ty = flip rewriteWithScope mempty $ \scope ty' ->
-  case ty' of
-    TypeVar var' | var' == var && not (S.member var scope) -> ty
-    _ -> ty'
+substVar var ty = rewriteWithScope go mempty
+  where
+  go scope = \case
+    TypeVar var'
+      | var' == var && not (S.member var scope) -> ty
+    ty' -> ty'
+
+substVars :: M.Map Var Type -> Type -> Type
+substVars vars = rewriteWithScope go mempty
+  where
+  go scope = \case
+    TypeVar var
+      | S.notMember var scope
+      , Just ty <- M.lookup var vars -> ty
+    ty -> ty
 
 mkForall :: BinderList -> Type -> Type
 mkForall = curry $ \case

@@ -15,6 +15,7 @@ infixl 5 %
 
 var = TypeVar . Var
 typ = TypeName . Name
+ctr = CtrName . Name
 
 testDecls =
   -- [ Sig (Name "T")
@@ -34,22 +35,36 @@ testDecls =
   --     ]
   -- ]
 
-  [ Sig (Name "Proxy")
-      (Forall [(Var "k", Nothing)]
-        (var "k" %-> Star))
+  -- [ Sig (Name "Proxy")
+  --     (Forall [(Var "k", Nothing)]
+  --       (var "k" %-> Star))
 
-  , Sig (Name "Relate")
-      (Forall [(Var "a", Nothing), (Var "b", Just (var "a"))]
-        (var "a" %-> typ "Proxy" %(var "b") %-> Star))
+  -- , Sig (Name "Relate")
+  --     (Forall [(Var "a", Nothing), (Var "b", Just (var "a"))]
+  --       (var "a" %-> typ "Proxy" %(var "b") %-> Star))
 
-  , Sig (Name "T")
-      (Forall
-        [ (Var "a", Just Star)
-        , (Var "b", Just (var "a"))
-        , (Var "c", Just (var "a"))
-        , (Var "d", Nothing)
-        ]
-        (typ "Relate" %(var "b") %(var "d") %-> Star))
+  -- , Sig (Name "T")
+  --     (Forall
+  --       [ (Var "a", Just Star)
+  --       , (Var "b", Just (var "a"))
+  --       , (Var "c", Just (var "a"))
+  --       , (Var "d", Nothing)
+  --       ]
+  --       (typ "Relate" %(var "b") %(var "d") %-> Star))
+  -- ]
+
+  [ Data (Name "Proxy") [Var "k"]
+      [ Ctr [] (Name "Proxy") []]
+  , Data (Name "Maybe") [Var "a"]
+      [ Ctr [] (Name "Just") [var "a"]
+      , Ctr [] (Name "Nothing") []
+      ]
+  , Sig (Name "T") (Forall [(Var "a", Nothing)] (typ "Maybe" %(var "a") %-> Star))
+  , Data (Name "K") []
+      [ Ctr [] (Name "K")
+          [ typ "T" %(ctr "Nothing")
+          ]
+      ]
   ]
 
   {-
@@ -66,7 +81,7 @@ main :: IO ()
 main =
   case runCheckM (checkProgram testDecls) of
     (res, CheckState lg ctx) -> do
-      -- putStrLn . intercalate "\n" . fmap printLog $ reverse lg
+      putStrLn . intercalate "\n" . fst $ printLogs [] lg
       putStrLn $ printContext ctx
       case res of
         Left err ->

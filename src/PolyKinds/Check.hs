@@ -26,8 +26,6 @@ import PolyKinds.Context
 import PolyKinds.StateExcM
 import PolyKinds.Type
 
-import Debug.Trace
-
 data CheckError
   = KindDoesNotResultInStar Type
   | SigUnknownVars (S.Set Var)
@@ -207,23 +205,33 @@ inferDataDeclGroup group = do
       a'' <- apply' (TypeUnknown a')
       pure (t, tc, a'', coerce . IS.toList $ unknowns a'')
 
-  let subs = foldMap (\(_, _, _, qc') -> qc') as
+  let
+    unkSubs =
+      IM.fromList
+        . fmap (\a' -> (getUnknown a', TypeVar (unknownVar a')))
+        . foldMap (\(_, _, _, qc') -> qc')
+        $ as
+
+    tySubs =
+      M.fromList
+        . fmap (\(t, _, _, qc') -> do
+            let kapp t' = KindApp t' . TypeVar . unknownVar
+            (t, foldl kapp (TypeName t) qc'))
+        $ as
+
   for_ as $ \(t, tc, a'', qc') -> do
-    let
-      mkQc = fmap (\a' -> (unknownVar a', Just Star))
-      substAll = flip (foldr (\a' -> substUnknown a' (TypeVar (unknownVar a')))) subs
+    let qc'' = fmap (\a' -> (unknownVar a', Just Star)) qc'
 
     extendType t
-      . mkForall (mkQc qc')
-      . substAll
+      . mkForall qc''
+      . substUnknowns unkSubs
       $ a''
 
     for_ tc $ \(c, w) ->
       extendTerm c
-        . mkForall (mkQc qc')
-        . flip (foldr (\(t, _, _, qc') ->
-                  substTypeName t (foldl (\t' -> KindApp t' . TypeVar . unknownVar) (TypeName t) qc'))) as
-        . substAll
+        . mkForall qc''
+        . substTypeNames tySubs
+        . substUnknowns unkSubs
         $ w
 
 inferDataDecl :: Name -> [Var] -> [Ctr] -> CheckM [(Name, Type)]
@@ -252,10 +260,11 @@ inferDataDecl = curry . curry . log (("inferDataDecl: " <>) . getName . fst . fs
       p' = foldl (\t' -> KindApp t' . TypeVar . fst) (TypeName t) qc
       p  = foldl (\t' -> TypeApp t' . TypeVar . fst) p' as''
 
-    for ds $ \d@(Ctr _ name _) -> do
+    ds' <- for ds $ \d@(Ctr _ name _) -> do
       u <- inferConstructor p d
       as''' <- traverse (traverse apply') as''
       pure (name, mkForall (fmap Just <$> (qc <> as''')) u)
+    traverse (traverse apply') ds'
 
 inferConstructor :: Type -> Ctr -> CheckM Type
 inferConstructor = curry . log (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q d ts)) -> do
@@ -287,6 +296,10 @@ inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
   TypeName t -> do
     n <- note (TypeNotInScope t) . fmap scType =<< lookupType t
     pure (n, TypeName t)
+  -- a-ktt-tcon (promoted data)
+  CtrName t -> do
+    n <- note (TypeNotInScope t) =<< lookupCtr t
+    pure (n, CtrName t)
   -- a-ktt-app
   TypeApp t1 t2 -> do
     (n1, p1) <- inferKind t1
@@ -315,7 +328,7 @@ inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
       apply' =<< checkKind o Star
     unless (S.notMember a $ foldMap (freeVars . scType) uns) $
       throw $ QuantificationCheckFailure a
-    for_ (IM.toList uns) $ \(b', ScopeValue _ k) ->
+    for_ (IM.toList uns) $ \(b', ScopeValue _ k _) ->
       extendUnsolved Nothing (Unknown b') k
     pure (Star, consForall (a, Just w) u)
   ty ->
@@ -329,7 +342,7 @@ inferAppKind = curry . log (const "inferAppKind") (\((a, b), c) -> [a,b,c]) (\(a
     pure (w2, TypeApp p1 p2)
   -- a-kapp-tt-kuvar
   ((p1, TypeUnknown a'), t) -> do
-    ScopeValue lvl w <- note (UnknownNotInScope a') =<< lookupUnsolved a'
+    ScopeValue lvl w _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     a1' <- unknown
     a2' <- unknown
     extendUnsolved (Just lvl) a1' Star
@@ -405,14 +418,18 @@ promote = curry . log (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \
     pure Lit
   -- a-pr-tcon
   (a', TypeName t) -> do
-    ScopeValue lvl1 _ <- note (TypeNotInScope t) =<< lookupType t
-    ScopeValue lvl2 _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
+    ScopeValue lvl1 _ _ <- note (TypeNotInScope t) =<< lookupType t
+    ScopeValue lvl2 _ _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     unless (lvl1 < lvl2) . throw $ TypeNotInScope t
     pure $ TypeName t
+  -- a-pr-tcon (promoted data)
+  (a', CtrName t) -> do
+    _ <- note (TypeNotInScope t) =<< lookupCtr t
+    pure $ CtrName t
   -- a-pr-tvar
   (a', TypeVar a) -> do
-    ScopeValue lvl1 _ <- note (VarNotInScope a) =<< lookupVar a
-    ScopeValue lvl2 _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
+    ScopeValue lvl1 _ _ <- note (VarNotInScope a) =<< lookupVar a
+    ScopeValue lvl2 _ _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     unless (lvl1 < lvl2) . throw $ VarNotInScope a
     pure $ TypeVar a
   -- a-pr-app
@@ -428,8 +445,8 @@ promote = curry . log (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \
   -- a-pr-kuvarL
   -- a-pr-kuvarR-tt
   (a', TypeUnknown b') | a' /= b' -> do
-    ScopeValue lvl1 p <- note (UnknownNotInScope b') =<< lookupUnsolved b'
-    ScopeValue lvl2 w <- note (UnknownNotInScope a') =<< lookupUnsolved a'
+    ScopeValue lvl1 p _ <- note (UnknownNotInScope b') =<< lookupUnsolved b'
+    ScopeValue lvl2 w _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     if lvl1 < lvl2 then
       pure $ TypeUnknown b'
     else do
@@ -464,6 +481,9 @@ elaboratedKind = log (const "elaboratedKind") pure pure $ \case
   TypeName t -> do
     n <- note (TypeNotInScope t) . fmap scType =<< lookupType t
     apply' n
+  -- a-ela-tcon (promoted data)
+  CtrName t -> do
+    note (TypeNotInScope t) =<< lookupCtr t
   -- a-ela-app
   TypeApp p1 p2 -> do
     p1Kind <- elaboratedKind p1

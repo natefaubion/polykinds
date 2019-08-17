@@ -2,6 +2,8 @@
 {-# LANGUAGE RecordWildCards #-}
 module PolyKinds.Printer where
 
+import Control.Monad (join)
+import Data.Bifunctor (bimap)
 import Data.List (intercalate, sortBy)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
@@ -20,9 +22,11 @@ printType = go
     TypeUnknown (Unknown unk) -> "?" <> show unk
     TypeVar (Var var) -> var
     TypeName (Name name) -> name
+    CtrName (Name name) -> "'" <> name
     TypeApp (TypeApp Arrow ty1@(TypeApp (TypeApp Arrow _) _)) ty2 -> "(" <> go ty1 <> ") -> " <> go ty2
     TypeApp (TypeApp Arrow ty1) ty2 -> go ty1 <> " -> " <> go ty2
     TypeApp ty1 ty2@(TypeApp _ _) -> go ty1 <> " (" <> go ty2 <> ")"
+    TypeApp ty1 ty2@(KindApp _ _) -> go ty1 <> " (" <> go ty2 <> ")"
     TypeApp ty1 ty2 -> go ty1 <> " " <> go ty2
     KindApp ty1 ty2@(KindApp _ _) -> go ty1 <> " @(" <> go ty2 <> ")"
     KindApp ty1 ty2 -> go ty1 <> " @" <> go ty2
@@ -47,14 +51,17 @@ data ContextValue
 
 printContext :: Context -> String
 printContext ctx=
-  intercalate "\n  " ("Types:" : printContextValues ctx) <> "\n\n" <>
+  intercalate "\n  " ("Types:" : printContextValues True ctx) <> "\n\n" <>
   intercalate "\n  " ("Terms:" : printTerms ctx)
 
-printContextValues :: Context -> [String]
-printContextValues (Context {..}) =
+printContextValues :: Bool -> Context -> [String]
+printContextValues showTypes (Context {..}) =
   fmap (go . snd) . sortBy (comparing fst) $ types <> scopes
   where
-  types  = fmap (\(a, (ScopeValue {..})) -> (scLevel, (CtxType a, scType))) . M.toList $ ctxTypes
+  types
+    | showTypes = fmap (\(a, (ScopeValue {..})) -> (scLevel, (CtxType a, scType))) . M.toList $ ctxTypes
+    | otherwise = []
+
   scopes =
     foldMap
       (\(TypeScope {..}) -> do
@@ -80,42 +87,51 @@ printTerms (Context {..}) = fmap (uncurry go) . M.toList $ ctxValues
   where
   go (Name n) ty = n <> " :: " <> printType ty
 
-printLog :: Log -> String
-printLog (Log lbl ctx1 ins ch outs ctx2) =
-  intercalate "\n" $ [ lbl ] <> header <> inputs <> children <> outputs <> footer
+printLogs :: [String] -> [Log] -> ([String], [String])
+printLogs prev = go prev [] . reverse
+  where
+  go ctx ss [] = (join $ reverse ss, ctx)
+  go ctx ss (l : ls) = do
+    let (l', ctx') = printLog ctx l
+    go ctx' (l' : ss) ls
+
+
+printLog :: [String] -> Log -> ([String], [String])
+printLog prev (Log lbl ctx1 ins ch outs ctx2) =
+  ( filter (/= "")
+    [ lbl
+    , header
+    , inputs
+    , children
+    , outputs
+    , footer
+    ]
+  , ctx2'
+  )
 
   where
-  ctx1' = printContextValues ctx1
-  ctx2' = printContextValues ctx2
+  ctx1' = printContextValues False ctx1
+  ctx2' = printContextValues False ctx2
+
   header
-    | null ctx1' = []
-    | otherwise =
-        [ indent "  - " . intercalate "\n" $ printContextValues ctx1
-        ]
+    | null ctx1' || ctx1' == prev = ""
+    | otherwise = indent "  | " . intercalate "\n" $ printContextValues False ctx1
 
   inputs
-    | null ins = []
-    | otherwise =
-        [ indent "  > " . intercalate "\n" $ fmap printType ins
-        ]
+    | null ins = ""
+    | otherwise = indent "  > " . intercalate "\n" $ fmap printType ins
 
-  children
-    | null ch = []
-    | otherwise =
-        [ indent "    " . intercalate "\n" . fmap printLog $ reverse ch
-        ]
+  (children, ctx3)
+    | null ch = ("", ctx1')
+    | otherwise = bimap ((indent "    ") . intercalate "\n") id $ printLogs ctx1' ch
 
   outputs
-    | null outs = []
-    | otherwise =
-        [ indent "  < " . intercalate "\n" $ fmap printType outs
-        ]
+    | null outs = ""
+    | otherwise = indent "  < " . intercalate "\n" $ fmap printType outs
 
   footer
-    | null ctx2' = []
-    | otherwise =
-        [ indent "  - " . intercalate "\n" $ printContextValues ctx2
-        ]
+    | null ctx2' || ctx2' == ctx3 = ""
+    | otherwise = indent "  | " . intercalate "\n" $ printContextValues False ctx2
 
 indent :: String -> String -> String
 indent ind = intercalate "\n" . fmap (ind <>) . lines

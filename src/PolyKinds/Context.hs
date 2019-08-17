@@ -24,8 +24,6 @@ import Data.Ord (comparing)
 import PolyKinds.StateExcM
 import PolyKinds.Type
 
-import Debug.Trace
-
 data Level
   = LvlAt !Int
   | LvlBefore !Level !Int
@@ -85,7 +83,7 @@ data Context = Context
   , ctxSolutions :: !(IM.IntMap Solution)
   , ctxTypes :: !(M.Map Name ScopeValue)
   , ctxValues :: !(M.Map Name Type)
-  } deriving (Show)
+  } deriving (Show, Eq)
 
 data TypeScope = TypeScope
   { tsLevel :: !Int
@@ -96,6 +94,7 @@ data TypeScope = TypeScope
 data ScopeValue = ScopeValue
   { scLevel :: !Level
   , scType :: !Type
+  , scUnsolved :: IS.IntSet
   } deriving (Show, Eq)
 
 emptyContext :: Context
@@ -127,7 +126,21 @@ insertVar :: Var -> ScopeValue -> TypeScope -> TypeScope
 insertVar var value ts = ts { tsVars = M.insert var value $ tsVars ts }
 
 lookupType :: MonadState Context m => Name -> m (Maybe ScopeValue)
-lookupType n = gets (M.lookup n . ctxTypes)
+lookupType n =
+  gets (M.lookup n . ctxTypes) >>= \case
+    Nothing -> pure Nothing
+    Just sc -> do
+      solved <- gets ctxSolutions
+      let (sc', solved') = applyScopeValue solved sc
+      when (IS.size (scUnsolved sc') < IS.size (scUnsolved sc)) $ do
+        modify $ \ctx -> ctx
+          { ctxSolutions = solved'
+          , ctxTypes = M.insert n sc' (ctxTypes ctx)
+          }
+      pure $ Just sc'
+
+lookupCtr :: MonadState Context m => Name -> m (Maybe Type)
+lookupCtr n = gets (M.lookup n . ctxValues)
 
 lookupUnsolved :: MonadState Context m => Unknown -> m (Maybe ScopeValue)
 lookupUnsolved (Unknown u) = gets $ foldr ((<|>) . IM.lookup u . tsUnsolved) Nothing . ctxScope
@@ -145,7 +158,7 @@ extendType :: MonadState Context m => Name -> Type -> m ScopeValue
 extendType n ty = state $ \ctx -> do
   let
     next = ctxLevel ctx
-    value = ScopeValue (LvlAt next) ty
+    value = ScopeValue (LvlAt next) ty (unknowns ty)
     ctx' = ctx
       { ctxLevel = next + 1
       , ctxTypes = M.insert n value $ ctxTypes ctx
@@ -157,7 +170,7 @@ extendUnsolved lvl (Unknown i) ty = state $ \ctx -> do
   let
     next = ctxLevel ctx
     lvl' = mkLevel next lvl
-    value = ScopeValue lvl' ty
+    value = ScopeValue lvl' ty (unknowns ty)
     ctx' = ctx
       { ctxLevel = next + 1
       , ctxScope = modifyScope (insertUnsolved i value) lvl' $ ctxScope ctx
@@ -169,7 +182,7 @@ extendVar var ty = state $ \ctx -> do
   let
     next = ctxLevel ctx
     lvl = LvlAt next
-    value = ScopeValue lvl ty
+    value = ScopeValue lvl ty (unknowns ty)
     ctx' = ctx
       { ctxLevel = next + 1
       , ctxScope = modifyScope (insertVar var value) lvl $ ctxScope ctx
@@ -195,10 +208,9 @@ dropScope :: MonadState Context m => m (IM.IntMap ScopeValue)
 dropScope = state $ \ctx -> do
   let
     TypeScope lvl uns _ :| scope' = ctxScope ctx
-    uns'  = IM.filterWithKey (\i _ -> IM.notMember i (ctxSolutions ctx)) uns
-    -- TODO: thread through updated solution state
-    uns'' = fmap (\sc@(ScopeValue l u) -> maybe sc (ScopeValue l) . fst . applySolutions (ctxSolutions ctx) $ u) uns'
-    ctx'  = ctx { ctxScope = NE.fromList scope' }
+    uns' = IM.filterWithKey (\i _ -> IM.notMember i (ctxSolutions ctx)) uns
+    (Just uns'', solved) = applyUnknowns (ctxSolutions ctx) uns'
+    ctx' = ctx { ctxScope = NE.fromList scope', ctxSolutions = solved }
   (uns'', ctx')
 
 scopedWithUnsolved :: MonadState Context m => m a -> m (a, IM.IntMap ScopeValue)
@@ -213,7 +225,7 @@ scoped = fmap fst . scopedWithUnsolved
 apply :: MonadState Context m => Type -> m (Maybe Type)
 apply ty = state $ \ctx -> do
   let
-    (res, solved) = applySolutions (ctxSolutions ctx) ty
+    (res, solved) = applySolutionsToType (ctxSolutions ctx) ty
     ctx' = ctx { ctxSolutions = solved }
   (res, ctx')
 
@@ -223,27 +235,61 @@ data SolutionState = SolutionState
   , ssSolutions :: !(IM.IntMap Solution)
   }
 
-applySolutions :: IM.IntMap Solution -> Type -> (Maybe Type, IM.IntMap Solution)
-applySolutions initialSolved initialTy =
+applyScopeValue :: IM.IntMap Solution -> ScopeValue -> (ScopeValue, IM.IntMap Solution)
+applyScopeValue initialSolved sv@(ScopeValue lvl ty uns)
+  | any (flip IM.member initialSolved) $ IS.toList uns = do
+      let
+        (res, (SolutionState _ uns' solved)) =
+          runStateExcM (SolutionState mempty mempty initialSolved)
+            $ applySolutionsToType' ty
+      case res of
+        Left _ -> (sv, solved)
+        Right ty' -> (ScopeValue lvl ty' uns', solved)
+  | otherwise =
+      (sv, initialSolved)
+
+applyUnknowns :: IM.IntMap Solution -> IM.IntMap ScopeValue -> (Maybe (IM.IntMap ScopeValue), IM.IntMap Solution)
+applyUnknowns initialSolved unks =
+  (either (const Nothing) Just finalRes, finalSolved)
+  where
+  (finalRes, (SolutionState _ _ finalSolved)) =
+    runStateExcM (SolutionState mempty mempty initialSolved)
+      $ applyUnknowns' unks
+
+applyUnknowns' :: IM.IntMap ScopeValue -> StateExcM () SolutionState (IM.IntMap ScopeValue)
+applyUnknowns' = IM.traverseWithKey go
+  where
+  go i (ScopeValue lvl ty _) = do
+    modify $ \(SolutionState _ _ solved) ->
+      SolutionState mempty mempty solved
+    ty' <- applySolutionsToType' ty
+    uns <- gets ssUnsolved
+    pure $ ScopeValue lvl ty' uns
+
+applySolutionsToType :: IM.IntMap Solution -> Type -> (Maybe Type, IM.IntMap Solution)
+applySolutionsToType initialSolved initialTy =
   (either (const Nothing) Just finalTy, finalSolved)
   where
   (finalTy, (SolutionState _ _ finalSolved)) =
-    runStateExcM (SolutionState mempty mempty initialSolved) $ go initialTy
+    runStateExcM (SolutionState mempty mempty initialSolved)
+      $ applySolutionsToType' initialTy
 
-  go :: Type -> StateExcM () SolutionState Type
+applySolutionsToType' :: Type -> StateExcM () SolutionState Type
+applySolutionsToType' = go
+  where
   go = rewriteM $ \ty -> case ty of
     TypeUnknown (Unknown i) -> do
       SolutionState seen unks solved <- get
       when (IS.member i seen) $ throwError ()
       case IM.lookup i solved of
         Just (Solution knd ty' unks')
-          | IS.null unks' ->
-              pure ty'
           | any (flip IM.member solved) $ IS.toList unks' -> do
               put $ SolutionState (IS.insert i seen) mempty solved
               ty'' <- go ty'
               state $ \(SolutionState _ unks'' solved') ->
                 (ty'' , SolutionState seen unks (IM.insert i (Solution knd ty'' unks'') solved'))
+          | otherwise ->
+              pure ty'
         _ -> do
           put $ SolutionState seen (IS.insert i unks) solved
           pure ty
