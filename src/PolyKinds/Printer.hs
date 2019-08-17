@@ -22,7 +22,6 @@ printType = go
     TypeUnknown (Unknown unk) -> "?" <> show unk
     TypeVar (Var var) -> var
     TypeName (Name name) -> name
-    CtrName (Name name) -> "'" <> name
     TypeApp (TypeApp Arrow ty1@(TypeApp (TypeApp Arrow _) _)) ty2 -> "(" <> go ty1 <> ") -> " <> go ty2
     TypeApp (TypeApp Arrow ty1) ty2 -> go ty1 <> " -> " <> go ty2
     TypeApp ty1 ty2@(TypeApp _ _) -> go ty1 <> " (" <> go ty2 <> ")"

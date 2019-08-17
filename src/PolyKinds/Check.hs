@@ -227,12 +227,15 @@ inferDataDeclGroup group = do
       . substUnknowns unkSubs
       $ a''
 
-    for_ tc $ \(c, w) ->
-      extendTerm c
-        . mkForall qc''
-        . substTypeNames tySubs
-        . substUnknowns unkSubs
-        $ w
+    for_ tc $ \(c, w) -> do
+      let
+        w' =
+          mkForall qc''
+            . substTypeNames tySubs
+            . substUnknowns unkSubs
+            $ w
+      extendTerm c w'
+      extendType (Name . ("'" <>) . getName $ c) w'
 
 inferDataDecl :: Name -> [Var] -> [Ctr] -> CheckM [(Name, Type)]
 inferDataDecl = curry . curry . log (("inferDataDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
@@ -296,10 +299,6 @@ inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
   TypeName t -> do
     n <- note (TypeNotInScope t) . fmap scType =<< lookupType t
     pure (n, TypeName t)
-  -- a-ktt-tcon (promoted data)
-  CtrName t -> do
-    n <- note (TypeNotInScope t) =<< lookupCtr t
-    pure (n, CtrName t)
   -- a-ktt-app
   TypeApp t1 t2 -> do
     (n1, p1) <- inferKind t1
@@ -422,10 +421,6 @@ promote = curry . log (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \
     ScopeValue lvl2 _ _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     unless (lvl1 < lvl2) . throw $ TypeNotInScope t
     pure $ TypeName t
-  -- a-pr-tcon (promoted data)
-  (a', CtrName t) -> do
-    _ <- note (TypeNotInScope t) =<< lookupCtr t
-    pure $ CtrName t
   -- a-pr-tvar
   (a', TypeVar a) -> do
     ScopeValue lvl1 _ _ <- note (VarNotInScope a) =<< lookupVar a
@@ -481,9 +476,6 @@ elaboratedKind = log (const "elaboratedKind") pure pure $ \case
   TypeName t -> do
     n <- note (TypeNotInScope t) . fmap scType =<< lookupType t
     apply' n
-  -- a-ela-tcon (promoted data)
-  CtrName t -> do
-    note (TypeNotInScope t) =<< lookupCtr t
   -- a-ela-app
   TypeApp p1 p2 -> do
     p1Kind <- elaboratedKind p1

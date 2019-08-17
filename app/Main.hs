@@ -15,7 +15,6 @@ infixl 5 %
 
 var = TypeVar . Var
 typ = TypeName . Name
-ctr = CtrName . Name
 
 testDecls =
   -- [ Sig (Name "T")
@@ -62,7 +61,7 @@ testDecls =
   , Sig (Name "T") (Forall [(Var "a", Nothing)] (typ "Maybe" %(var "a") %-> Star))
   , Data (Name "K") []
       [ Ctr [] (Name "K")
-          [ typ "T" %(ctr "Nothing")
+          [ typ "T" %(typ "'Nothing")
           ]
       ]
   ]

@@ -20,7 +20,6 @@ data Type
   | TypeUnknown Unknown
   | TypeVar Var
   | TypeName Name
-  | CtrName Name
   | TypeApp Type Type
   | KindApp Type Type
   | Forall BinderList Type
