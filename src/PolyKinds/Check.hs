@@ -27,7 +27,7 @@ import PolyKinds.StateExcM
 import PolyKinds.Type
 
 data CheckError
-  = KindDoesNotResultInStar Type
+  = KindDoesNotResultIn Type Type
   | SigUnknownVars (S.Set Var)
   | CycleInSignature Name
   | CycleInBinderList [Var]
@@ -96,14 +96,14 @@ log klbl kin kout k = \a -> CheckM $ do
 apply' :: Type -> CheckM Type
 apply' t = note (CycleInSubstitution t) =<< apply t
 
-kindResultsInStar :: Type -> CheckM ()
-kindResultsInStar ty = go ty
+kindResultsIn :: Type -> Type -> CheckM ()
+kindResultsIn ty ty' = go ty'
   where
   go = \case
     Forall _ k -> go k
     TypeApp (TypeApp Arrow _) k -> go k
-    Star -> pure ()
-    k -> throw $ KindDoesNotResultInStar ty
+    k | ty == k -> pure ()
+    k -> throw $ KindDoesNotResultIn ty ty'
 
 generalizeUnknowns :: IM.IntMap ScopeValue -> Type -> Type
 generalizeUnknowns unks ty
@@ -160,8 +160,12 @@ declSort decls =
             <> foldMap (toList . names) tys
       (d, (False, n), if hasSig then sig : ns else ns)
 
-checkProgram :: [Decl] -> CheckM ()
-checkProgram ds = declSort ds >>= checkDecls
+checkProgram :: [Decl] -> Type -> CheckM Type
+checkProgram ds ty = do
+  checkDecls =<< declSort ds
+  (ty', unks) <- scopedWithUnsolved $ do
+    apply' =<< checkKind ty Star
+  pure $ generalizeUnknowns unks ty'
 
 checkDecls :: [SortedDecl] -> CheckM ()
 checkDecls = traverse_ $ \case
@@ -182,7 +186,7 @@ checkDecls = traverse_ $ \case
 
 inferSignature :: Name -> Type -> CheckM Type
 inferSignature = curry . log (("inferSignature: " <>) . getName . fst) (pure . snd) pure $ \(t, o) -> do
-  kindResultsInStar o
+  kindResultsIn Star o
   let fv = freeVars o
   unless (S.null fv) . throw . SigUnknownVars $ fv
   (n, unks) <- scopedWithUnsolved $ do

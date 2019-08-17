@@ -52,7 +52,8 @@ testDecls =
   --       (typ "Relate" %(var "b") %(var "d") %-> Star))
   -- ]
 
-  [ Data (Name "Proxy") [Var "k"]
+  [ Sig (Name "String") Star
+  , Data (Name "Proxy") [Var "k"]
       [ Ctr [] (Name "Proxy") []]
   , Data (Name "Maybe") [Var "a"]
       [ Ctr [] (Name "Just") [var "a"]
@@ -66,6 +67,10 @@ testDecls =
       ]
   ]
 
+testTy =
+  Forall [(Var "k", Nothing)]
+    (typ "Proxy" %(var "k") %-> typ "String")
+
   {-
 
   data Proxy :: forall k. k -> *
@@ -78,12 +83,14 @@ testDecls =
 
 main :: IO ()
 main =
-  case runCheckM (checkProgram testDecls) of
+  case runCheckM (checkProgram testDecls testTy) of
     (res, CheckState lg ctx) -> do
       putStrLn . intercalate "\n" . fst $ printLogs [] lg
       putStrLn $ printContext ctx
+      putStrLn $ replicate 64 '-'
       case res of
         Left err ->
           putStrLn $ show err
-        _ ->
-          pure ()
+        Right ty ->
+          putStrLn $ printType ty
+      putStrLn $ replicate 64 '-'
