@@ -3,19 +3,24 @@ module Main where
 import Data.List (intercalate)
 
 import PolyKinds.Type
-import PolyKinds.Context
 import PolyKinds.Check
 import PolyKinds.Printer
 
+(%->) :: Type -> Type -> Type
 (%->) a b = Arrow %a %b
 infixr 4 %->
 
+(%) :: Type -> Type -> Type
 (%) a b = TypeApp a b
 infixl 5 %
 
+var :: String -> Type
 var = TypeVar . Var
+
+typ :: String -> Type
 typ = TypeName . Name
 
+testDecls :: [Decl]
 testDecls =
   -- [ Sig (Name "T")
   --     (Forall
@@ -67,6 +72,14 @@ testDecls =
       ]
   ]
 
+  -- [ Data (Name "F") [Var "f"]
+  --     [ Ctr [] (Name "MkF")
+  --         [ var "f" %(typ "F")
+  --         ]
+  --     ]
+  -- ]
+
+testTy :: Type
 testTy =
   Forall [(Var "k", Nothing)]
     (typ "Proxy" %(var "k") %-> typ "String")

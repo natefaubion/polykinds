@@ -46,7 +46,6 @@ data ContextValue
   = CtxType !Name
   | CtxVar !Var
   | CtxUnsolved !Int
-  | CtxSolution !Int Type Type
 
 printContext :: Context -> String
 printContext ctx=

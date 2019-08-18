@@ -54,8 +54,8 @@ foldTypeWithScope :: Semigroup m => (S.Set Var -> Type -> m) -> S.Set Var -> Typ
 foldTypeWithScope k = go
   where
   go seen ty = case ty of
-    Forall bs ty ->
-      k seen ty <> goBinders seen ty bs
+    Forall bs ty' ->
+      k seen ty <> goBinders seen ty' bs
     TypeApp a b ->
       k seen ty <> (go seen a <> go seen b)
     KindApp a b ->
@@ -74,8 +74,8 @@ foldType :: Semigroup m => (Type -> m) -> Type -> m
 foldType k = go
   where
   go ty = case ty of
-    Forall bs ty ->
-      k ty <> goBinders ty bs
+    Forall bs ty' ->
+      k ty <> goBinders ty' bs
     TypeApp a b ->
       k ty <> (go a <> go b)
     KindApp a b ->
@@ -85,7 +85,7 @@ foldType k = go
 
   goBinders ty = \case
     [] -> go ty
-    (var, mbK) : bs ->
+    (_, mbK) : bs ->
       case mbK of
         Just ty' ->
           go ty' <> goBinders ty bs
@@ -125,8 +125,8 @@ rewriteWithScopeM :: Monad m => (S.Set Var -> Type -> m Type) -> S.Set Var -> Ty
 rewriteWithScopeM k = go
   where
   go seen ty = case ty of
-    Forall bs ty ->
-      k seen =<< goForall seen ty [] bs
+    Forall bs ty' ->
+      k seen =<< goForall seen ty' [] bs
     TypeApp a b -> do
       a' <- go seen a
       b' <- go seen b
@@ -156,8 +156,8 @@ names = foldType $ \case
   _ ->
     mempty
 
-vars :: Type -> S.Set (Either Var Unknown)
-vars = flip foldTypeWithScope mempty $ \scope ty ->
+varsAndUnknowns :: Type -> S.Set (Either Var Unknown)
+varsAndUnknowns = flip foldTypeWithScope mempty $ \scope ty ->
   case ty of
     TypeUnknown unk ->
       S.singleton (Right unk)
@@ -167,7 +167,7 @@ vars = flip foldTypeWithScope mempty $ \scope ty ->
       mempty
 
 freeVars :: Type -> S.Set Var
-freeVars = S.fromDistinctAscList . mapMaybe go . toList . vars
+freeVars = S.fromDistinctAscList . mapMaybe go . toList . varsAndUnknowns
   where
   go = \case
     Left var -> Just var
@@ -180,9 +180,9 @@ substUnknowns unks = rewrite $ \case
   ty -> ty
 
 substTypeNames :: M.Map Name Type -> Type -> Type
-substTypeNames names = rewrite $ \case
+substTypeNames ns = rewrite $ \case
   TypeName name
-    | Just ty <- M.lookup name names -> ty
+    | Just ty <- M.lookup name ns -> ty
   ty -> ty
 
 substVar :: Var -> Type -> Type -> Type
@@ -223,7 +223,7 @@ completeBinderList = go []
   where
   go bs ty =
     case unconsForall ty of
-      Just ((var, Nothing), ty') ->
+      Just ((_, Nothing), _) ->
         Nothing
       Just ((var, Just k), ty') ->
         go ((var, k) : bs) ty'

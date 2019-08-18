@@ -41,7 +41,7 @@ instance Monad (StateExcM e s) where
 
 instance MonadState s (StateExcM e s) where
   {-# INLINE state #-}
-  state k = StateExcM $ \(!s) ke ks ->
+  state k = StateExcM $ \(!s) _ ks ->
     let (a, !s') = k s in ks s' a
 
 instance MonadError e (StateExcM e s) where

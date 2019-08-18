@@ -10,7 +10,7 @@ module PolyKinds.Check where
 import Prelude hiding (log)
 
 import Control.Monad (join, unless, void)
-import Control.Monad.Except (ExceptT, MonadError, throwError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, get, gets, modify, state)
 import Data.Bitraversable (bitraverse)
 import Data.Coerce (coerce)
@@ -34,7 +34,7 @@ data CheckError
   | UnknownNotInScope Unknown
   | VarNotInScope Var
   | TypeNotInScope Name
-  | CycleInSubstitution Type
+  | InfiniteKind Unknown Type
   | DoesNotUnify Type Type
   | CannotApplyType (Type, Type) Type
   | CannotApplyKind (Type, Type) Type
@@ -76,8 +76,8 @@ note err = \case
   Just a -> pure a
   Nothing -> throw err
 
-log :: (a -> String) -> (a -> [Type]) -> (b -> [Type]) -> (a -> CheckM b) -> (a -> CheckM b)
-log klbl kin kout k = \a -> CheckM $ do
+logCheck :: (a -> String) -> (a -> [Type]) -> (b -> [Type]) -> (a -> CheckM b) -> (a -> CheckM b)
+logCheck klbl kin kout k = \a -> CheckM $ do
   (prev, inputCtx) <- state $ \(CheckState log ctx) -> ((log, ctx), CheckState [] ctx)
   b <- let CheckM z = k a in z
   modify $ \(CheckState children ctx) -> do
@@ -93,9 +93,6 @@ log klbl kin kout k = \a -> CheckM $ do
     CheckState (entry : prev) ctx
   pure b
 
-apply' :: Type -> CheckM Type
-apply' t = note (CycleInSubstitution t) =<< apply t
-
 kindResultsIn :: Type -> Type -> CheckM ()
 kindResultsIn ty ty' = go ty'
   where
@@ -103,7 +100,7 @@ kindResultsIn ty ty' = go ty'
     Forall _ k -> go k
     TypeApp (TypeApp Arrow _) k -> go k
     k | ty == k -> pure ()
-    k -> throw $ KindDoesNotResultIn ty ty'
+    _ -> throw $ KindDoesNotResultIn ty ty'
 
 generalizeUnknowns :: IM.IntMap ScopeValue -> Type -> Type
 generalizeUnknowns unks ty
@@ -164,7 +161,7 @@ checkProgram :: [Decl] -> Type -> CheckM Type
 checkProgram ds ty = do
   checkDecls =<< declSort ds
   (ty', unks) <- scopedWithUnsolved $ do
-    apply' =<< checkKind ty Star
+    apply =<< checkKind ty Star
   pure $ generalizeUnknowns unks ty'
 
 checkDecls :: [SortedDecl] -> CheckM ()
@@ -174,10 +171,10 @@ checkDecls = traverse_ $ \case
     void . extendType name =<< inferSignature name k
   -- a-pgm-dt-ttS
   -- a-pgm-dt-tt
-  Right group@[(name, vars, ctrs)] -> do
+  Right group@[(name, vs, cs)] -> do
     hasSig <- isJust <$> lookupType name
     if hasSig then
-      traverse_ (uncurry extendTerm) =<< inferDataDecl name vars ctrs
+      traverse_ (uncurry extendTerm) =<< inferDataDecl name vs cs
     else
       inferDataDeclGroup group
   -- a-pgm-dt-tt
@@ -185,12 +182,12 @@ checkDecls = traverse_ $ \case
     inferDataDeclGroup group
 
 inferSignature :: Name -> Type -> CheckM Type
-inferSignature = curry . log (("inferSignature: " <>) . getName . fst) (pure . snd) pure $ \(t, o) -> do
+inferSignature = curry . logCheck (("inferSignature: " <>) . getName . fst) (pure . snd) pure $ \(_, o) -> do
   kindResultsIn Star o
   let fv = freeVars o
   unless (S.null fv) . throw . SigUnknownVars $ fv
   (n, unks) <- scopedWithUnsolved $ do
-    apply' =<< snd <$> inferKind o
+    apply =<< snd <$> inferKind o
   pure $ generalizeUnknowns unks n
 
 inferDataDeclGroup :: [(Name, [Var], [Ctr])] -> CheckM ()
@@ -206,7 +203,7 @@ inferDataDeclGroup group = do
       inferDataDecl t vs cs
 
     for (zip as tcs) $ \((t, a'), tc) -> do
-      a'' <- apply' (TypeUnknown a')
+      a'' <- apply (TypeUnknown a')
       pure (t, tc, a'', coerce . IS.toList $ unknowns a'')
 
   let
@@ -242,10 +239,10 @@ inferDataDeclGroup group = do
       extendType (Name . ("'" <>) . getName $ c) w'
 
 inferDataDecl :: Name -> [Var] -> [Ctr] -> CheckM [(Name, Type)]
-inferDataDecl = curry . curry . log (("inferDataDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
+inferDataDecl = curry . curry . logCheck (("inferDataDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
   ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
   (qc, w) <- note (InternalError "inferDataDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
-  w_ <- apply' w
+  w_ <- apply w
   scoped $ do
     for_ qc $ uncurry extendVar
 
@@ -259,7 +256,7 @@ inferDataDecl = curry . curry . log (("inferDataDecl: " <>) . getName . fst . fs
       $ as'
 
     as'' <- for as' $ \(a, a') -> do
-      a_ <- apply' (TypeUnknown a')
+      a_ <- apply (TypeUnknown a')
       extendVar a a_
       pure (a, a_)
 
@@ -269,19 +266,18 @@ inferDataDecl = curry . curry . log (("inferDataDecl: " <>) . getName . fst . fs
 
     ds' <- for ds $ \d@(Ctr _ name _) -> do
       u <- inferConstructor p d
-      as''' <- traverse (traverse apply') as''
-      pure (name, mkForall (fmap Just <$> (qc <> as''')) u)
-    traverse (traverse apply') ds'
+      pure (name, mkForall (fmap Just <$> (qc <> as'')) u)
+    traverse (traverse apply) ds'
 
 inferConstructor :: Type -> Ctr -> CheckM Type
-inferConstructor = curry . log (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q d ts)) -> do
+inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q _ ts)) -> do
   (u, qc') <- scopedWithUnsolved $ do
     (_, u) <- inferKind . mkForall q $ foldr (\ti -> TypeApp (TypeApp Arrow ti)) p ts
-    apply' u
+    apply u
   pure $ generalizeUnknowns qc' u
 
 inferKind :: Type -> CheckM (Type, Type)
-inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
+inferKind = logCheck (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
   -- a-ktt-kstar
   Star ->
     pure (Star, Star)
@@ -309,7 +305,7 @@ inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
     inferAppKind (p1, n1) t2
   -- a-ktt-kapp
   KindApp t1 t2 -> do
-    (n, p1) <- bitraverse apply' pure =<< inferKind t1
+    (n, p1) <- bitraverse apply pure =<< inferKind t1
     case unconsForall n of
       Just ((a, Just w), n2) -> do
         p2 <- checkKind t2 w
@@ -328,17 +324,17 @@ inferKind = log (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
         pure $ TypeUnknown a'
     (u, uns) <- scopedWithUnsolved $ do
       extendVar a w
-      apply' =<< checkKind o Star
+      apply =<< checkKind o Star
     unless (S.notMember a $ foldMap (freeVars . scType) uns) $
       throw $ QuantificationCheckFailure a
-    for_ (IM.toList uns) $ \(b', ScopeValue _ k _) ->
-      extendUnsolved Nothing (Unknown b') k
+    for_ (IM.toList uns) $ \(b', ScopeValue _ k' _) ->
+      extendUnsolved Nothing (Unknown b') k'
     pure (Star, consForall (a, Just w) u)
   ty ->
     throw $ InternalError "inferKind: unreachable case" $ Just ty
 
 inferAppKind :: (Type, Type) -> Type -> CheckM (Type, Type)
-inferAppKind = curry . log (const "inferAppKind") (\((a, b), c) -> [a,b,c]) (\(a, b) -> [a, b]) $ \case
+inferAppKind = curry . logCheck (const "inferAppKind") (\((a, b), c) -> [a,b,c]) (\(a, b) -> [a, b]) $ \case
   -- a-kapp-tt-arrow
   ((p1, TypeApp (TypeApp Arrow w1) w2), t) -> do
     p2 <- checkKind t w1
@@ -362,14 +358,14 @@ inferAppKind = curry . log (const "inferAppKind") (\((a, b), c) -> [a,b,c]) (\(a
     throw $ InternalError "Unreachable case: inferAppKind" Nothing
 
 checkKind :: Type -> Type -> CheckM Type
-checkKind = curry . log (const "checkKind") (\(a, b) -> [a,b]) pure $ \(o, w) -> do
+checkKind = curry . logCheck (const "checkKind") (\(a, b) -> [a,b]) pure $ \(o, w) -> do
   (n, u1) <- inferKind o
-  n_ <- apply' n
-  w_ <- apply' w
+  n_ <- apply n
+  w_ <- apply w
   instantiate (u1, n_) w_
 
 instantiate :: (Type, Type) -> Type -> CheckM Type
-instantiate = curry . log (const "instantiate") (\((a, b), c) -> [a,b,c]) pure $ \case
+instantiate = curry . logCheck (const "instantiate") (\((a, b), c) -> [a,b,c]) pure $ \case
   -- a-inst-forall
   ((u1, ty), w2) | Just ((a, Just w1), n) <- unconsForall ty -> do
     a' <- unknown
@@ -381,15 +377,15 @@ instantiate = curry . log (const "instantiate") (\((a, b), c) -> [a,b,c]) pure $
     pure u
 
 unify :: Type -> Type -> CheckM ()
-unify = curry . log (const "unify") (\(a, b) -> [a,b]) (const []) $ \case
+unify = curry . logCheck (const "unify") (\(a, b) -> [a,b]) (const []) $ \case
   -- a-u-app
   (TypeApp p1 p2, TypeApp p3 p4) -> do
     unify p1 p3
-    join $ unify <$> apply' p2 <*> apply' p4
+    join $ unify <$> apply p2 <*> apply p4
   -- a-u-kapp
   (KindApp p1 p2, KindApp p3 p4) -> do
     unify p1 p3
-    join $ unify <$> apply' p2 <*> apply' p4
+    join $ unify <$> apply p2 <*> apply p4
   -- a-u-refl-tt
   (w1, w2) | w1 == w2 ->
     pure ()
@@ -397,19 +393,19 @@ unify = curry . log (const "unify") (\(a, b) -> [a,b]) (const []) $ \case
   (TypeUnknown a', p1) -> do
     p2 <- promote a' p1
     w1 <- note (UnknownNotInScope a') . fmap scType =<< lookupUnsolved a'
-    join $ unify <$> apply' w1 <*> elaboratedKind p2
+    join $ unify <$> apply w1 <*> elaboratedKind p2
     solve a' w1 p2
   -- a-u-kvarR-tt
   (p1, TypeUnknown a') -> do
     p2 <- promote a' p1
     w1 <- note (UnknownNotInScope a') . fmap scType =<< lookupUnsolved a'
-    join $ unify <$> apply' w1 <*> elaboratedKind p2
+    join $ unify <$> apply w1 <*> elaboratedKind p2
     solve a' w1 p2
   (w1, w2) ->
     throw $ DoesNotUnify w1 w2
 
 promote :: Unknown -> Type -> CheckM Type
-promote = curry . log (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \case
+promote = curry . logCheck (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \case
   --a-pr-star
   (_, Star) ->
     pure Star
@@ -434,31 +430,31 @@ promote = curry . log (const "promote") (\(a, b) -> [TypeUnknown a, b]) pure $ \
   -- a-pr-app
   (a', TypeApp w1 w2) -> do
     p1 <- promote a' w1
-    p2 <- promote a' =<< apply' w2
+    p2 <- promote a' =<< apply w2
     pure $ TypeApp p1 p2
   -- a-pr-kapp
   (a', KindApp w1 w2) -> do
     p1 <- promote a' w1
-    p2 <- promote a' =<< apply' w2
+    p2 <- promote a' =<< apply w2
     pure $ KindApp p1 p2
   -- a-pr-kuvarL
   -- a-pr-kuvarR-tt
   (a', TypeUnknown b') | a' /= b' -> do
     ScopeValue lvl1 p _ <- note (UnknownNotInScope b') =<< lookupUnsolved b'
-    ScopeValue lvl2 w _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
+    ScopeValue lvl2 _ _ <- note (UnknownNotInScope a') =<< lookupUnsolved a'
     if lvl1 < lvl2 then
       pure $ TypeUnknown b'
     else do
-      p1  <- promote a' =<< apply' p
+      p1  <- promote a' =<< apply p
       b1' <- unknown
       extendUnsolved (Just lvl2) b1' p1
       solve b' p $ TypeUnknown b1'
       pure $ TypeUnknown b1'
   (a', b') ->
-    throw $ CycleInSubstitution b'
+    throw $ InfiniteKind a' b'
 
 elaboratedKind :: Type -> CheckM Type
-elaboratedKind = log (const "elaboratedKind") pure pure $ \case
+elaboratedKind = logCheck (const "elaboratedKind") pure pure $ \case
   -- a-ela-star
   Star ->
     pure Star
@@ -471,15 +467,15 @@ elaboratedKind = log (const "elaboratedKind") pure pure $ \case
   -- a-ela-kuvar
   TypeUnknown a' -> do
     w <- note (UnknownNotInScope a') . fmap scType =<< lookupUnsolved a'
-    apply' w
+    apply w
   -- a-ela-var
   TypeVar a -> do
     w <- note (VarNotInScope a) . fmap scType =<< lookupVar a
-    apply' w
+    apply w
   -- a-ela-tcon
   TypeName t -> do
     n <- note (TypeNotInScope t) . fmap scType =<< lookupType t
-    apply' n
+    apply n
   -- a-ela-app
   TypeApp p1 p2 -> do
     p1Kind <- elaboratedKind p1
@@ -499,7 +495,7 @@ elaboratedKind = log (const "elaboratedKind") pure pure $ \case
         p2Kind <- elaboratedKind p2
         unless (p2Kind == w) $
           throw $ CannotApplyKind (p1, p2) p2Kind
-        flip (substVar a) n <$> apply' p2
+        flip (substVar a) n <$> apply p2
       _ ->
         throw $ CannotApplyKind (p1, p2) p1
   -- a-ela-forall
