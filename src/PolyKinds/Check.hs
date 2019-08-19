@@ -131,23 +131,23 @@ data SortedDecl
 
 data SortedGroup
   = SortedData Name [Var] [Ctr]
-  | SortedClass Name [Var] [ClassMember]
+  | SortedClass [Type] Name [Var] [ClassMember]
 
 declSort :: [Decl] -> CheckM [SortedDecl]
 declSort decls =
   for sorted $ \case
     AcyclicSCC (Data n vs cs) ->
       pure $ SortedDecl [SortedData n vs cs]
-    AcyclicSCC (Class n vs cs) ->
-      pure $ SortedDecl [SortedClass n vs cs]
+    AcyclicSCC (Class ss n vs cs) ->
+      pure $ SortedDecl [SortedClass ss n vs cs]
     AcyclicSCC (Sig s t) ->
       pure $ SortedSig s t
     CyclicSCC ds ->
       fmap SortedDecl $ for ds $ \case
         Data n vs cs ->
           pure $ SortedData n vs cs
-        Class n vs cs ->
-          pure $ SortedClass n vs cs
+        Class ss n vs cs ->
+          pure $ SortedClass ss n vs cs
         Sig n _ ->
           throw $ CycleInSignature n
   where
@@ -222,7 +222,7 @@ inferDataDeclGroup group = do
         extendUnsolved Nothing a' Star
         extendType t (TypeUnknown a')
         pure (t, a')
-      SortedClass t _ _ -> do
+      SortedClass _ t _ _ -> do
         a' <- unknown
         extendUnsolved Nothing a' Star
         extendType t (TypeUnknown a')
@@ -231,8 +231,8 @@ inferDataDeclGroup group = do
     tcs <- for group $ \case
       SortedData t vs cs ->
         (True,) <$> inferDataDecl t vs cs
-      SortedClass t vs cs ->
-        (False,) <$> inferClassDecl t vs cs
+      SortedClass ss t vs cs ->
+        (False,) <$> inferClassDecl ss t vs cs
 
     for (zip as tcs) $ \((t, a'), tc) -> do
       a'' <- apply (TypeUnknown a')
@@ -310,8 +310,8 @@ inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrNa
     apply u
   pure $ generalizeUnknowns qc' u
 
-inferClassDecl :: Name -> [Var] -> [ClassMember] -> CheckM [(Name, Type)]
-inferClassDecl = curry . curry . logCheck (("inferClassDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
+inferClassDecl :: [Type] -> Name -> [Var] -> [ClassMember] -> CheckM [(Name, Type)]
+inferClassDecl ss = curry . curry . logCheck (("inferClassDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
   ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
   (qc, w) <- note (InternalError "inferClassDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
   scoped $ do
@@ -327,6 +327,9 @@ inferClassDecl = curry . curry . logCheck (("inferClassDecl: " <>) . getName . f
       a_ <- apply (TypeUnknown a')
       extendVar a a_
       pure (a, a_)
+
+    for_ ss $ \s -> do
+      void $ checkKind s Constraint
 
     ds' <- for ds $ \(ClassMember name d) -> do
       u <- checkKind d Star

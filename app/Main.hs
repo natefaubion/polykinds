@@ -84,30 +84,35 @@ testDecls =
   -- ]
 
   [ Sig (Name "Boolean") Star
-  , Class (Name "Eq") [Var "a"]
-      [ ClassMember (Name "eq") (var "a" %-> var "a" %-> typ "Boolean")
-      ]
-  , Class (Name "Functor") [Var "f"]
-      [ ClassMember (Name "map")
-          (Forall
-            [ (Var "a", Nothing)
-            , (Var "b", Nothing)
-            ]
-            ((var "a" %-> var "b")
-              %-> var "f" %(var "a")
-              %-> var "f" %(var "b")))
-      ]
-  , Data (Name "Dict") [Var "c"]
-      [ Ctr [] [var "c"] (Name "Dict") []
-      ]
-  , Data (Name "FBox") [Var "f", Var "a"]
-      [ Ctr [(Var "x", Nothing)] [typ "Functor" %(var "f")] (Name "FBox") [var "f" %(var "x"), var "x" %-> var "a"]
-      ]
+  -- , Sig (Name "Ordering") Star
+  -- , Class [] (Name "Eq") [Var "a"]
+  --     [ ClassMember (Name "eq") (var "a" %-> var "a" %-> typ "Boolean")
+  --     ]
+  -- , Class [typ "Eq" %(var "a")] (Name "Ord") [Var "a"]
+  --     [ ClassMember (Name "compare") (var "a" %-> var "a" %-> typ "Ordering")
+  --     ]
+  , Class [var "f" %(var "a"), var "g" %(var "a")] (Name "Conj") [Var "f", Var "g", Var "a"]
+      []
+  -- , Class [] (Name "Functor") [Var "f"]
+  --     [ ClassMember (Name "map")
+  --         (Forall
+  --           [ (Var "a", Nothing)
+  --           , (Var "b", Nothing)
+  --           ]
+  --           ((var "a" %-> var "b")
+  --             %-> var "f" %(var "a")
+  --             %-> var "f" %(var "b")))
+  --     ]
+  -- , Data (Name "Dict") [Var "c"]
+  --     [ Ctr [] [var "c"] (Name "Dict") []
+  --     ]
+  -- , Data (Name "FBox") [Var "f", Var "a"]
+  --     [ Ctr [(Var "x", Nothing)] [typ "Functor" %(var "f")] (Name "FBox") [var "f" %(var "x"), var "x" %-> var "a"]
+  --     ]
   ]
 
 testTy :: Type
-testTy =
-  (typ "Dict" %(typ "Boolean"))
+testTy = Star
   -- Forall [(Var "k", Nothing)]
   --   (typ "Proxy" %(var "k") %-> typ "String")
 
