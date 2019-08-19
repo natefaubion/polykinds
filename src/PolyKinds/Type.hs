@@ -17,6 +17,8 @@ data Type
   = Star
   | Lit
   | Arrow
+  | Constraint
+  | ConstraintArrow
   | TypeUnknown Unknown
   | TypeVar Var
   | TypeName Name
@@ -41,6 +43,7 @@ newtype Unknown = Unknown { getUnknown :: Int }
 data Decl
   = Sig Name Type
   | Data Name [Var] [Ctr]
+  | Class Name [Var] [ClassMember]
   deriving (Show, Eq)
 
 data Ctr = Ctr
@@ -48,6 +51,30 @@ data Ctr = Ctr
   , ctrName :: Name
   , ctrArgs :: [Type]
   } deriving (Show, Eq)
+
+data ClassMember = ClassMember
+  { memName :: Name
+  , memType :: Type
+  } deriving (Show, Eq)
+
+isSig :: Decl -> Bool
+isSig = \case
+  Sig _ _ -> True
+  _ -> False
+
+declName :: Decl -> Name
+declName = \case
+  Sig n _ -> n
+  Data n _ _ -> n
+  Class n _ _ -> n
+
+declTypes :: Decl -> [Type]
+declTypes = \case
+  Sig _ t -> [t]
+  Data _ _ cs ->
+    foldMap (\(Ctr bs _ as) -> foldMap (foldMap pure . snd) bs <> as) cs
+  Class _ _ cs ->
+    foldMap (pure . memType) cs
 
 {-# INLINE foldTypeWithScope #-}
 foldTypeWithScope :: Semigroup m => (S.Set Var -> Type -> m) -> S.Set Var -> Type -> m
@@ -217,6 +244,12 @@ consForall :: (Var, Maybe Type) -> Type -> Type
 consForall b = \case
   Forall bs ty' -> Forall (b : bs) ty'
   ty' -> Forall [b] ty'
+
+mkTypeApp :: Type -> [Type] -> Type
+mkTypeApp = foldl TypeApp
+
+mkConstraintArrow :: Name -> [Type] -> Type -> Type
+mkConstraintArrow n = TypeApp . TypeApp ConstraintArrow . mkTypeApp (TypeName n)
 
 completeBinderList :: Type -> Maybe ([(Var, Type)], Type)
 completeBinderList = go []

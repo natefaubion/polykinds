@@ -3,14 +3,15 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module PolyKinds.Check where
 
 import Prelude hiding (log)
 
-import Control.Monad (join, unless, void)
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad (join, unless, void, when)
+import Control.Monad.Except (MonadError, catchError, throwError)
 import Control.Monad.State (MonadState, get, gets, modify, state)
 import Data.Bitraversable (bitraverse)
 import Data.Coerce (coerce)
@@ -27,7 +28,7 @@ import PolyKinds.StateExcM
 import PolyKinds.Type
 
 data CheckError
-  = KindDoesNotResultIn Type Type
+  = KindDoesNotResultIn [Type] Type
   | SigUnknownVars (S.Set Var)
   | CycleInSignature Name
   | CycleInBinderList [Var]
@@ -79,28 +80,35 @@ note err = \case
 logCheck :: (a -> String) -> (a -> [Type]) -> (b -> [Type]) -> (a -> CheckM b) -> (a -> CheckM b)
 logCheck klbl kin kout k = \a -> CheckM $ do
   (prev, inputCtx) <- state $ \(CheckState log ctx) -> ((log, ctx), CheckState [] ctx)
-  b <- let CheckM z = k a in z
-  modify $ \(CheckState children ctx) -> do
-    let
-      entry = Log
-        { logLabel = klbl a
-        , logInputCtx = inputCtx
-        , logInputs = kin a
-        , logChildren = children
-        , logOutputs = kout b
-        , logOutputCtx = ctx
-        }
-    CheckState (entry : prev) ctx
+  let
+    restore b =
+      modify $ \(CheckState children ctx) -> do
+        let
+          entry = Log
+            { logLabel = klbl a
+            , logInputCtx = inputCtx
+            , logInputs = kin a
+            , logChildren = children
+            , logOutputs = maybe [] kout b
+            , logOutputCtx = ctx
+            }
+        CheckState (entry : prev) ctx
+  b <- do
+    let CheckM z = k a
+    catchError z $ \e -> do
+      restore Nothing
+      throwError e
+  restore (Just b)
   pure b
 
-kindResultsIn :: Type -> Type -> CheckM ()
-kindResultsIn ty ty' = go ty'
+kindResultsIn :: [Type] -> Type -> CheckM ()
+kindResultsIn tys ty = go ty
   where
   go = \case
-    Forall _ k -> go k
-    TypeApp (TypeApp Arrow _) k -> go k
-    k | ty == k -> pure ()
-    _ -> throw $ KindDoesNotResultIn ty ty'
+    Forall _ ty' -> go ty'
+    TypeApp (TypeApp Arrow _) ty' -> go ty'
+    ty' | ty' `elem` tys -> pure ()
+    ty' -> throw $ KindDoesNotResultIn tys ty'
 
 generalizeUnknowns :: IM.IntMap ScopeValue -> Type -> Type
 generalizeUnknowns unks ty
@@ -117,45 +125,60 @@ generalizeUnknowns unks ty
     ty' ->
       ty'
 
-type SortedDecl = Either (Name, Type) [(Name, [Var], [Ctr])]
+data SortedDecl
+  = SortedSig Name Type
+  | SortedDecl [SortedGroup]
+
+data SortedGroup
+  = SortedData Name [Var] [Ctr]
+  | SortedClass Name [Var] [ClassMember]
 
 declSort :: [Decl] -> CheckM [SortedDecl]
 declSort decls =
   for sorted $ \case
     AcyclicSCC (Data n vs cs) ->
-      pure $ Right [(n, vs, cs)]
+      pure $ SortedDecl [SortedData n vs cs]
+    AcyclicSCC (Class n vs cs) ->
+      pure $ SortedDecl [SortedClass n vs cs]
     AcyclicSCC (Sig s t) ->
-      pure $ Left (s, t)
+      pure $ SortedSig s t
     CyclicSCC ds ->
-      fmap Right $ for ds $ \case
+      fmap SortedDecl $ for ds $ \case
         Data n vs cs ->
-          pure (n, vs, cs)
+          pure $ SortedData n vs cs
+        Class n vs cs ->
+          pure $ SortedClass n vs cs
         Sig n _ ->
           throw $ CycleInSignature n
   where
   sorted =
-    stronglyConnComp . fmap deps $ decls
+    stronglyConnComp
+      . fmap declDeps
+      $ decls
 
-  sigs =
+  sigNames =
     flip mapMaybe decls $ \case
       Sig n _ -> Just n
       _ -> Nothing
 
-  nameKey n =
-    (n `elem` sigs, n)
+  nameKey name =
+    (name `elem` sigNames, name)
 
-  deps d = case d of
-    Sig n ty ->
-      (d, (True, n), nameKey <$> toList (names ty))
-    Data n _ ctrs -> do
-      let
-        sig@(hasSig, _) =
-          nameKey n
-        ns = nameKey <$> do
-          Ctr bs _ tys <- ctrs
-          foldMap (foldMap (foldMap (toList . names))) bs
-            <> foldMap (toList . names) tys
-      (d, (False, n), if hasSig then sig : ns else ns)
+  declDeps decl = do
+    let
+      name = declName decl
+      sigKey = nameKey name
+      tyNames =
+        fmap nameKey
+          . toList
+          . foldMap names
+          . declTypes
+          $ decl
+      deps
+        | not (isSig decl) && fst sigKey =
+            sigKey : tyNames
+        | otherwise = tyNames
+    (decl, (isSig decl, name), deps)
 
 checkProgram :: [Decl] -> Type -> CheckM Type
 checkProgram ds ty = do
@@ -167,40 +190,49 @@ checkProgram ds ty = do
 checkDecls :: [SortedDecl] -> CheckM ()
 checkDecls = traverse_ $ \case
   -- a-pgm-sig
-  Left (name, k) -> do
+  SortedSig name k -> do
     void . extendType name =<< inferSignature name k
   -- a-pgm-dt-ttS
   -- a-pgm-dt-tt
-  Right group@[(name, vs, cs)] -> do
-    hasSig <- isJust <$> lookupType name
-    if hasSig then
-      traverse_ (uncurry extendTerm) =<< inferDataDecl name vs cs
-    else
-      inferDataDeclGroup group
-  -- a-pgm-dt-tt
-  Right group ->
-    inferDataDeclGroup group
+  SortedDecl group
+    | [SortedData name vs cs] <- group -> do
+        hasSig <- isJust <$> lookupType name
+        if hasSig then
+          traverse_ (uncurry extendTerm) =<< inferDataDecl name vs cs
+        else
+          inferDataDeclGroup group
+    | otherwise ->
+        inferDataDeclGroup group
 
 inferSignature :: Name -> Type -> CheckM Type
 inferSignature = curry . logCheck (("inferSignature: " <>) . getName . fst) (pure . snd) pure $ \(_, o) -> do
-  kindResultsIn Star o
+  kindResultsIn [Star, Constraint] o
   let fv = freeVars o
   unless (S.null fv) . throw . SigUnknownVars $ fv
   (n, unks) <- scopedWithUnsolved $ do
     apply =<< snd <$> inferKind o
   pure $ generalizeUnknowns unks n
 
-inferDataDeclGroup :: [(Name, [Var], [Ctr])] -> CheckM ()
+inferDataDeclGroup :: [SortedGroup] -> CheckM ()
 inferDataDeclGroup group = do
   as <- scoped $ do
-    as <- for group $ \(t, _, _) -> do
-      a' <- unknown
-      extendUnsolved Nothing a' Star
-      extendType t (TypeUnknown a')
-      pure (t, a')
+    as <- for group $ \case
+      SortedData t _ _ -> do
+        a' <- unknown
+        extendUnsolved Nothing a' Star
+        extendType t (TypeUnknown a')
+        pure (t, a')
+      SortedClass t _ _ -> do
+        a' <- unknown
+        extendUnsolved Nothing a' Star
+        extendType t (TypeUnknown a')
+        pure (t, a')
 
-    tcs <- for group $ \(t, vs, cs) ->
-      inferDataDecl t vs cs
+    tcs <- for group $ \case
+      SortedData t vs cs ->
+        (True,) <$> inferDataDecl t vs cs
+      SortedClass t vs cs ->
+        (False,) <$> inferClassDecl t vs cs
 
     for (zip as tcs) $ \((t, a'), tc) -> do
       a'' <- apply (TypeUnknown a')
@@ -220,7 +252,7 @@ inferDataDeclGroup group = do
             (t, foldl kapp (TypeName t) qc'))
         $ as
 
-  for_ as $ \(t, tc, a'', qc') -> do
+  for_ as $ \(t, (isDataKind, tc), a'', qc') -> do
     let qc'' = fmap (\a' -> (unknownVar a', Just Star)) qc'
 
     extendType t
@@ -236,24 +268,21 @@ inferDataDeclGroup group = do
             . substUnknowns unkSubs
             $ w
       extendTerm c w'
-      extendType (Name . ("'" <>) . getName $ c) w'
+      when (isDataKind) $
+        extendType (Name . ("'" <>) . getName $ c) w'
 
 inferDataDecl :: Name -> [Var] -> [Ctr] -> CheckM [(Name, Type)]
 inferDataDecl = curry . curry . logCheck (("inferDataDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
   ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
   (qc, w) <- note (InternalError "inferDataDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
-  w_ <- apply w
   scoped $ do
     for_ qc $ uncurry extendVar
-
     as' <- for as $ \a -> do
       a' <- unknown
       extendUnsolved Nothing a' Star
       pure (a, a')
 
-    unify w_
-      . foldr (\(_, a') -> TypeApp (TypeApp Arrow (TypeUnknown a'))) Star
-      $ as'
+    unify w $ foldr (TypeApp . TypeApp Arrow . TypeUnknown . snd) Star as'
 
     as'' <- for as' $ \(a, a') -> do
       a_ <- apply (TypeUnknown a')
@@ -266,27 +295,65 @@ inferDataDecl = curry . curry . logCheck (("inferDataDecl: " <>) . getName . fst
 
     ds' <- for ds $ \d@(Ctr _ name _) -> do
       u <- inferConstructor p d
-      pure (name, mkForall (fmap Just <$> (qc <> as'')) u)
+      pure (name, mkForall (fmap Just <$> qc <> as'') u)
     traverse (traverse apply) ds'
 
 inferConstructor :: Type -> Ctr -> CheckM Type
 inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q _ ts)) -> do
   (u, qc') <- scopedWithUnsolved $ do
-    (_, u) <- inferKind . mkForall q $ foldr (\ti -> TypeApp (TypeApp Arrow ti)) p ts
+    (_, u) <- inferKind . mkForall q $ foldr (TypeApp . TypeApp Arrow) p ts
     apply u
   pure $ generalizeUnknowns qc' u
+
+inferClassDecl :: Name -> [Var] -> [ClassMember] -> CheckM [(Name, Type)]
+inferClassDecl = curry . curry . logCheck (("inferClassDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
+  ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
+  (qc, w) <- note (InternalError "inferClassDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
+  scoped $ do
+    for_ qc $ uncurry extendVar
+    as' <- for as $ \a -> do
+      a' <- unknown
+      extendUnsolved Nothing a' Star
+      pure (a, a')
+
+    unify w $ foldr (TypeApp . TypeApp Arrow . TypeUnknown . snd) Constraint as'
+
+    as'' <- for as' $ \(a, a') -> do
+      a_ <- apply (TypeUnknown a')
+      extendVar a a_
+      pure (a, a_)
+
+    ds' <- for ds $ \(ClassMember name d) -> do
+      u <- checkKind d Star
+      let
+        qvars = fmap Just <$> qc <> as''
+        u' = case u of
+          Forall bs u'' ->
+            Forall (qvars <> bs)
+              . mkConstraintArrow t (TypeVar <$> as)
+              $ u''
+          _ ->
+            mkForall qvars
+              . mkConstraintArrow t (TypeVar <$> as)
+              $ u
+      pure (name, u')
+    traverse (traverse apply) ds'
 
 inferKind :: Type -> CheckM (Type, Type)
 inferKind = logCheck (const "inferKind") pure (\(a, b) -> [a, b]) $ \case
   -- a-ktt-kstar
   Star ->
     pure (Star, Star)
+  Constraint ->
+    pure (Star, Constraint)
   -- a-ktt-nat
   Lit ->
     pure (Star, Lit)
   -- a-ktt-arrow
   Arrow ->
     pure (TypeApp (TypeApp Arrow Star) (TypeApp (TypeApp Arrow Star) Star), Arrow)
+  ConstraintArrow ->
+    pure (TypeApp (TypeApp Arrow Constraint) (TypeApp (TypeApp Arrow Star) Star), ConstraintArrow)
   -- a-ktt-uvar
   TypeUnknown a' -> do
     n <- note (UnknownNotInScope a') . fmap scType =<< lookupUnsolved a'
@@ -337,6 +404,9 @@ inferAppKind :: (Type, Type) -> Type -> CheckM (Type, Type)
 inferAppKind = curry . logCheck (const "inferAppKind") (\((a, b), c) -> [a,b,c]) (\(a, b) -> [a, b]) $ \case
   -- a-kapp-tt-arrow
   ((p1, TypeApp (TypeApp Arrow w1) w2), t) -> do
+    p2 <- checkKind t w1
+    pure (w2, TypeApp p1 p2)
+  ((p1, TypeApp (TypeApp ConstraintArrow w1) w2), t) -> do
     p2 <- checkKind t w1
     pure (w2, TypeApp p1 p2)
   -- a-kapp-tt-kuvar
@@ -409,9 +479,13 @@ promote = curry . logCheck (const "promote") (\(a, b) -> [TypeUnknown a, b]) pur
   --a-pr-star
   (_, Star) ->
     pure Star
+  (_, Constraint) ->
+    pure Constraint
   --a-pr-arrow
   (_, Arrow) ->
     pure Arrow
+  (_, ConstraintArrow) ->
+    pure ConstraintArrow
   --a-pr-nat
   (_, Lit) ->
     pure Lit
@@ -458,12 +532,16 @@ elaboratedKind = logCheck (const "elaboratedKind") pure pure $ \case
   -- a-ela-star
   Star ->
     pure Star
+  Constraint ->
+    pure Star
   -- a-ela-nat
   Lit ->
     pure Star
   -- a-ela-arrow
   Arrow ->
     pure $ TypeApp (TypeApp Arrow Star) (TypeApp (TypeApp Arrow Star) Star)
+  ConstraintArrow ->
+    pure $ TypeApp (TypeApp Arrow Constraint) (TypeApp (TypeApp Arrow Star) Star)
   -- a-ela-kuvar
   TypeUnknown a' -> do
     w <- note (UnknownNotInScope a') . fmap scType =<< lookupUnsolved a'
