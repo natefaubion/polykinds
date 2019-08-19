@@ -48,6 +48,7 @@ data Decl
 
 data Ctr = Ctr
   { ctrExists :: BinderList
+  , ctrConstraints :: [Type]
   , ctrName :: Name
   , ctrArgs :: [Type]
   } deriving (Show, Eq)
@@ -72,7 +73,7 @@ declTypes :: Decl -> [Type]
 declTypes = \case
   Sig _ t -> [t]
   Data _ _ cs ->
-    foldMap (\(Ctr bs _ as) -> foldMap (foldMap pure . snd) bs <> as) cs
+    foldMap (\(Ctr bs cns _ as) -> foldMap (foldMap pure . snd) bs <> cns <> as) cs
   Class _ _ cs ->
     foldMap (pure . memType) cs
 

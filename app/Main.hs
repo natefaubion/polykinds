@@ -97,19 +97,17 @@ testDecls =
               %-> var "f" %(var "a")
               %-> var "f" %(var "b")))
       ]
-  , Class (Name "C") [Var "x"]
-      [ ClassMember (Name "go")
-          (Forall
-            [ (Var "f", Nothing)
-            ]
-            (var "f" %(var "x") %-> typ "Boolean"))
+  , Data (Name "Dict") [Var "c"]
+      [ Ctr [] [var "c"] (Name "Dict") []
+      ]
+  , Data (Name "FBox") [Var "f", Var "a"]
+      [ Ctr [(Var "x", Nothing)] [typ "Functor" %(var "f")] (Name "FBox") [var "f" %(var "x"), var "x" %-> var "a"]
       ]
   ]
 
 testTy :: Type
 testTy =
-  Forall [(Var "c", Nothing)]
-    (var "c" %=> typ "Boolean")
+  (typ "Dict" %(typ "Boolean"))
   -- Forall [(Var "k", Nothing)]
   --   (typ "Proxy" %(var "k") %-> typ "String")
 

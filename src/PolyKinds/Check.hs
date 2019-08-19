@@ -293,15 +293,20 @@ inferDataDecl = curry . curry . logCheck (("inferDataDecl: " <>) . getName . fst
       p' = foldl (\t' -> KindApp t' . TypeVar . fst) (TypeName t) qc
       p  = foldl (\t' -> TypeApp t' . TypeVar . fst) p' as''
 
-    ds' <- for ds $ \d@(Ctr _ name _) -> do
+    ds' <- for ds $ \d@(Ctr _ _ name _) -> do
       u <- inferConstructor p d
       pure (name, mkForall (fmap Just <$> qc <> as'') u)
     traverse (traverse apply) ds'
 
 inferConstructor :: Type -> Ctr -> CheckM Type
-inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q _ ts)) -> do
+inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrName . snd) (const []) (const []) $ \(p, (Ctr q cs _ ts)) -> do
   (u, qc') <- scopedWithUnsolved $ do
-    (_, u) <- inferKind . mkForall q $ foldr (TypeApp . TypeApp Arrow) p ts
+    (_, u) <-
+      inferKind
+        . mkForall q
+        . flip (foldr (TypeApp . TypeApp ConstraintArrow)) cs
+        . flip (foldr (TypeApp . TypeApp Arrow)) ts
+        $ p
     apply u
   pure $ generalizeUnknowns qc' u
 
