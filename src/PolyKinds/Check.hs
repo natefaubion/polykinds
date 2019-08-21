@@ -130,8 +130,8 @@ data SortedDecl
   | SortedDecl [SortedGroup]
 
 data SortedGroup
-  = SortedData Name [Var] [Ctr]
-  | SortedClass [Type] Name [Var] [ClassMember]
+  = SortedData Name BinderList [Ctr]
+  | SortedClass [Type] Name BinderList [ClassMember]
 
 declSort :: [Decl] -> CheckM [SortedDecl]
 declSort decls =
@@ -199,6 +199,12 @@ checkDecls = traverse_ $ \case
         hasSig <- isJust <$> lookupType name
         if hasSig then
           traverse_ (uncurry extendTerm) =<< inferDataDecl name vs cs
+        else
+          inferDataDeclGroup group
+    | [SortedClass ss name vs cs] <- group -> do
+        hasSig <- isJust <$> lookupType name
+        if hasSig then
+          traverse_ (uncurry extendTerm) =<< inferClassDecl ss name vs cs
         else
           inferDataDeclGroup group
     | otherwise ->
@@ -271,21 +277,24 @@ inferDataDeclGroup group = do
       when (isDataKind) $
         extendType (Name . ("'" <>) . getName $ c) w'
 
-inferDataDecl :: Name -> [Var] -> [Ctr] -> CheckM [(Name, Type)]
+inferDataDecl :: Name -> BinderList -> [Ctr] -> CheckM [(Name, Type)]
 inferDataDecl = curry . curry . logCheck (("inferDataDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
   ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
   (qc, w) <- note (InternalError "inferDataDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
   scoped $ do
     for_ qc $ uncurry extendVar
-    as' <- for as $ \a -> do
-      a' <- unknown
-      extendUnsolved Nothing a' Star
-      pure (a, a')
+    as' <- for as $ \case
+      (a, Nothing) -> do
+        a' <- unknown
+        extendUnsolved Nothing a' Star
+        pure (a, TypeUnknown a')
+      (a, Just k) ->
+        (a,) <$> checkKind k Star
 
-    unify w $ foldr (TypeApp . TypeApp Arrow . TypeUnknown . snd) Star as'
+    unify w $ foldr (TypeApp . TypeApp Arrow . snd) Star as'
 
     as'' <- for as' $ \(a, a') -> do
-      a_ <- apply (TypeUnknown a')
+      a_ <- apply a'
       extendVar a a_
       pure (a, a_)
 
@@ -310,21 +319,24 @@ inferConstructor = curry . logCheck (("inferConstructor: " <>) . getName . ctrNa
     apply u
   pure $ generalizeUnknowns qc' u
 
-inferClassDecl :: [Type] -> Name -> [Var] -> [ClassMember] -> CheckM [(Name, Type)]
+inferClassDecl :: [Type] -> Name -> BinderList -> [ClassMember] -> CheckM [(Name, Type)]
 inferClassDecl ss = curry . curry . logCheck (("inferClassDecl: " <>) . getName . fst . fst) (const []) (const []) $ \((t, as), ds) -> do
   ty <- note (TypeNotInScope t) . fmap scType =<< lookupType t
   (qc, w) <- note (InternalError "inferClassDecl: incomplete binder list" (Just ty)) . completeBinderList $ ty
   scoped $ do
     for_ qc $ uncurry extendVar
-    as' <- for as $ \a -> do
-      a' <- unknown
-      extendUnsolved Nothing a' Star
-      pure (a, a')
+    as' <- for as $ \case
+      (a, Nothing) -> do
+        a' <- unknown
+        extendUnsolved Nothing a' Star
+        pure (a, TypeUnknown a')
+      (a, Just k) ->
+        (a,) <$> checkKind k Star
 
-    unify w $ foldr (TypeApp . TypeApp Arrow . TypeUnknown . snd) Constraint as'
+    unify w $ foldr (TypeApp . TypeApp Arrow . snd) Constraint as'
 
     as'' <- for as' $ \(a, a') -> do
-      a_ <- apply (TypeUnknown a')
+      a_ <- apply a'
       extendVar a a_
       pure (a, a_)
 
@@ -338,11 +350,11 @@ inferClassDecl ss = curry . curry . logCheck (("inferClassDecl: " <>) . getName 
         u' = case u of
           Forall bs u'' ->
             Forall (qvars <> bs)
-              . mkConstraintArrow t (TypeVar <$> as)
+              . mkConstraintArrow t (TypeVar . fst <$> as)
               $ u''
           _ ->
             mkForall qvars
-              . mkConstraintArrow t (TypeVar <$> as)
+              . mkConstraintArrow t (TypeVar . fst <$> as)
               $ u
       pure (name, u')
     traverse (traverse apply) ds'
@@ -432,8 +444,8 @@ inferAppKind = curry . logCheck (const "inferAppKind") (\((a, b), c) -> [a,b,c])
     a' <- unknown
     extendUnsolved Nothing a' w1
     inferAppKind (KindApp p1 (TypeUnknown a'), substVar a (TypeUnknown a') n) t
-  _ ->
-    throw $ InternalError "Unreachable case: inferAppKind" Nothing
+  (a, b) ->
+    throw $ CannotApplyType a b
 
 checkKind :: Type -> Type -> CheckM Type
 checkKind = curry . logCheck (const "checkKind") (\(a, b) -> [a,b]) pure $ \(o, w) -> do

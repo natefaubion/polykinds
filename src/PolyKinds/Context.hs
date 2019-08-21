@@ -224,8 +224,7 @@ apply ty = state $ \ctx -> do
   (res, ctx')
 
 data SolutionState = SolutionState
-  { ssSeen :: !IS.IntSet
-  , ssUnsolved :: !IS.IntSet
+  { ssUnsolved :: !IS.IntSet
   , ssSolutions :: !(IM.IntMap Solution)
   }
 
@@ -233,8 +232,8 @@ applyScopeValue :: IM.IntMap Solution -> ScopeValue -> (ScopeValue, IM.IntMap So
 applyScopeValue initialSolved sv@(ScopeValue lvl ty uns)
   | any (flip IM.member initialSolved) $ IS.toList uns = do
       let
-        (ty', (SolutionState _ uns' solved)) =
-          flip runState (SolutionState mempty mempty initialSolved)
+        (ty', (SolutionState uns' solved)) =
+          flip runState (SolutionState mempty initialSolved)
             $ applySolutionsToType' ty
       (ScopeValue lvl ty' uns', solved)
   | otherwise =
@@ -242,39 +241,39 @@ applyScopeValue initialSolved sv@(ScopeValue lvl ty uns)
 
 applyUnknowns :: IM.IntMap Solution -> IM.IntMap ScopeValue -> (IM.IntMap ScopeValue, IM.IntMap Solution)
 applyUnknowns initialSolved =
-  fmap ssSolutions . flip runState (SolutionState mempty mempty initialSolved) . applyUnknowns'
+  fmap ssSolutions . flip runState (SolutionState mempty initialSolved) . applyUnknowns'
 
 applyUnknowns' :: IM.IntMap ScopeValue -> State SolutionState (IM.IntMap ScopeValue)
 applyUnknowns' = traverse go
   where
   go (ScopeValue lvl ty _) = do
-    modify $ \(SolutionState _ _ solved) ->
-      SolutionState mempty mempty solved
+    modify $ \(SolutionState _ solved) ->
+      SolutionState mempty solved
     ty' <- applySolutionsToType' ty
     uns <- gets ssUnsolved
     pure $ ScopeValue lvl ty' uns
 
 applySolutionsToType :: IM.IntMap Solution -> Type -> (Type, IM.IntMap Solution)
 applySolutionsToType initialSolved =
-  fmap ssSolutions . flip runState (SolutionState mempty mempty initialSolved) . applySolutionsToType'
+  fmap ssSolutions . flip runState (SolutionState mempty initialSolved) . applySolutionsToType'
 
 applySolutionsToType' :: Type -> State SolutionState Type
 applySolutionsToType' = go
   where
   go = rewriteM $ \ty -> case ty of
     TypeUnknown (Unknown i) -> do
-      SolutionState seen unks solved <- get
+      SolutionState unks solved <- get
       case IM.lookup i solved of
         Just (Solution knd ty' unks')
           | any (flip IM.member solved) $ IS.toList unks' -> do
-              put $ SolutionState (IS.insert i seen) mempty solved
+              put $ SolutionState mempty solved
               ty'' <- go ty'
-              state $ \(SolutionState _ unks'' solved') ->
-                (ty'' , SolutionState seen unks (IM.insert i (Solution knd ty'' unks'') solved'))
+              state $ \(SolutionState unks'' solved') ->
+                (ty'', SolutionState unks (IM.insert i (Solution knd ty'' unks'') solved'))
           | otherwise ->
               pure ty'
         _ -> do
-          put $ SolutionState seen (IS.insert i unks) solved
+          put $ SolutionState (IS.insert i unks) solved
           pure ty
     _ ->
       pure ty

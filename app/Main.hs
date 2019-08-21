@@ -84,6 +84,12 @@ testDecls =
   -- ]
 
   [ Sig (Name "Boolean") Star
+  , Data (Name "App")
+      [ (Var "f", Just (Star %-> Star))
+      , (Var "a", Nothing)
+      ]
+      [ Ctr [] [] (Name "App") [var "f" %(var "a")]
+      ]
   -- , Sig (Name "Ordering") Star
   -- , Class [] (Name "Eq") [Var "a"]
   --     [ ClassMember (Name "eq") (var "a" %-> var "a" %-> typ "Boolean")
@@ -91,23 +97,38 @@ testDecls =
   -- , Class [typ "Eq" %(var "a")] (Name "Ord") [Var "a"]
   --     [ ClassMember (Name "compare") (var "a" %-> var "a" %-> typ "Ordering")
   --     ]
-  , Class [var "f" %(var "a"), var "g" %(var "a")] (Name "Conj") [Var "f", Var "g", Var "a"]
-      []
-  -- , Class [] (Name "Functor") [Var "f"]
-  --     [ ClassMember (Name "map")
-  --         (Forall
-  --           [ (Var "a", Nothing)
-  --           , (Var "b", Nothing)
-  --           ]
-  --           ((var "a" %-> var "b")
-  --             %-> var "f" %(var "a")
-  --             %-> var "f" %(var "b")))
-  --     ]
+  -- , Class [var "f" %(var "a"), var "g" %(var "a")] (Name "Conj") [Var "f", Var "g", Var "a"]
+      -- []
+  , Sig (Name "Functor") ((Star %-> Star) %-> Constraint)
+  , Class [] (Name "Functor") [(Var "f", Nothing)]
+      [ ClassMember (Name "map")
+          (Forall
+            [ (Var "a", Nothing)
+            , (Var "b", Nothing)
+            ]
+            ((var "a" %-> var "b")
+              %-> var "f" %(var "a")
+              %-> var "f" %(var "b")))
+      ]
   -- , Data (Name "Dict") [Var "c"]
   --     [ Ctr [] [var "c"] (Name "Dict") []
   --     ]
   -- , Data (Name "FBox") [Var "f", Var "a"]
   --     [ Ctr [(Var "x", Nothing)] [typ "Functor" %(var "f")] (Name "FBox") [var "f" %(var "x"), var "x" %-> var "a"]
+  --     ]
+  -- , Class [] (Name "CFunctor")
+  --     [ (Var "c", Nothing)
+  --     , (Var "f", Nothing)
+  --     ]
+  --     [ ClassMember (Name "cmap")
+  --         (Forall
+  --           [ (Var "a", Nothing)
+  --           , (Var "b", Nothing)
+  --           ]
+  --           (var "c"
+  --             %=> (var "a" %-> var "b")
+  --             %-> (var "f" %(var "a"))
+  --             %-> (var "f" %(var "b"))))
   --     ]
   ]
 

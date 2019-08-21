@@ -42,8 +42,8 @@ newtype Unknown = Unknown { getUnknown :: Int }
 
 data Decl
   = Sig Name Type
-  | Data Name [Var] [Ctr]
-  | Class [Type] Name [Var] [ClassMember]
+  | Data Name BinderList [Ctr]
+  | Class [Type] Name BinderList [ClassMember]
   deriving (Show, Eq)
 
 data Ctr = Ctr
@@ -72,10 +72,13 @@ declName = \case
 declTypes :: Decl -> [Type]
 declTypes = \case
   Sig _ t -> [t]
-  Data _ _ cs ->
+  Data _ vs cs ->
+    foldMap (foldMap pure . snd) vs <>
     foldMap (\(Ctr bs cns _ as) -> foldMap (foldMap pure . snd) bs <> cns <> as) cs
-  Class ss _ _ cs ->
-    ss <> foldMap (pure . memType) cs
+  Class ss _ vs cs ->
+    ss <>
+    foldMap (foldMap pure . snd) vs <>
+    foldMap (pure . memType) cs
 
 {-# INLINE foldTypeWithScope #-}
 foldTypeWithScope :: Semigroup m => (S.Set Var -> Type -> m) -> S.Set Var -> Type -> m
