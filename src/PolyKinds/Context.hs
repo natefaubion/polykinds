@@ -79,7 +79,7 @@ data Context = Context
   , ctxScope :: NE.NonEmpty TypeScope
   , ctxSolutions :: !(IM.IntMap Solution)
   , ctxTypes :: !(M.Map Name ScopeValue)
-  , ctxValues :: !(M.Map Name Type)
+  , ctxValues :: !(M.Map Name (TermValue, Type))
   } deriving (Show, Eq)
 
 data TypeScope = TypeScope
@@ -93,6 +93,11 @@ data ScopeValue = ScopeValue
   , scType :: !Type
   , scUnsolved :: IS.IntSet
   } deriving (Show, Eq)
+
+data TermValue
+  = CtrFn
+  | ClassFn
+  deriving (Show, Eq)
 
 emptyContext :: Context
 emptyContext = Context
@@ -135,9 +140,6 @@ lookupType n =
           , ctxTypes = M.insert n sc' (ctxTypes ctx)
           }
       pure $ Just sc'
-
-lookupCtr :: MonadState Context m => Name -> m (Maybe Type)
-lookupCtr n = gets (M.lookup n . ctxValues)
 
 lookupUnsolved :: MonadState Context m => Unknown -> m (Maybe ScopeValue)
 lookupUnsolved (Unknown u) = gets $ foldr ((<|>) . IM.lookup u . tsUnsolved) Nothing . ctxScope
@@ -183,9 +185,9 @@ extendVar var ty = modify $ \ctx -> do
     , ctxScope = modifyScope (insertVar var value) lvl $ ctxScope ctx
     }
 
-extendTerm :: MonadState Context m => Name -> Type -> m ()
-extendTerm n ty = modify $ \ctx ->
-  ctx { ctxValues = M.insert n ty (ctxValues ctx) }
+extendTerm :: MonadState Context m => TermValue -> Name -> Type -> m ()
+extendTerm tv n ty = modify $ \ctx ->
+  ctx { ctxValues = M.insert n (tv, ty) (ctxValues ctx) }
 
 solve :: MonadState Context m => Unknown -> Type -> Type -> m ()
 solve (Unknown i) knd ty = modify $ \ctx ->

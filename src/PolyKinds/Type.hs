@@ -276,3 +276,46 @@ unknowns = foldType $ \case
     IS.singleton i
   _ ->
     mempty
+
+isType :: Type -> Bool
+isType = go
+  where
+  go = \case
+    Lit -> True
+    Arrow -> True
+    ConstraintArrow -> True
+    TypeVar _ -> True
+    TypeName _ -> True
+    TypeApp a b -> go a && go b
+    KindApp a b -> go a && isKind b
+    Forall bs ty -> goBinders bs && go ty
+    _ -> False
+
+  goBinders = \case
+    (_, Just a) : bs -> isKind a && goBinders bs
+    _ : bs -> goBinders bs
+    _ -> True
+
+isKind :: Type -> Bool
+isKind = \case
+  Star -> True
+  Constraint -> True
+  Lit -> True
+  Arrow -> True
+  TypeVar _ -> True
+  TypeName _ -> True
+  TypeApp a b -> isKind a && isKind b
+  KindApp a b -> isKind a && isKind b
+  _ -> False
+
+isKindDecl :: Type -> Bool
+isKindDecl = go
+  where
+  go = \case
+    Forall bs kd -> goBinders bs && go kd
+    kd -> isKind kd
+
+  goBinders = \case
+    (_, Just a) : bs -> isKind a && goBinders bs
+    _ : bs -> goBinders bs
+    _ -> True

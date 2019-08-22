@@ -86,7 +86,7 @@ printContextValues showTypes (Context {..}) =
 printTerms :: Context -> [String]
 printTerms (Context {..}) = fmap (uncurry go) . M.toList $ ctxValues
   where
-  go (Name n) ty = n <> " :: " <> printType ty
+  go (Name n) (_, ty) = n <> " :: " <> printType ty
 
 printLogs :: [String] -> [Log] -> ([String], [String])
 printLogs prev = go prev [] . reverse

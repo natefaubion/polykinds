@@ -84,6 +84,7 @@ testDecls =
   -- ]
 
   [ Sig (Name "Boolean") Star
+  , Sig (Name "Row") (Forall [(Var "k", Nothing)] (var "k" %-> Star))
   , Data (Name "App")
       [ (Var "f", Just (Star %-> Star))
       , (Var "a", Nothing)
@@ -91,15 +92,15 @@ testDecls =
       [ Ctr [] [] (Name "App") [var "f" %(var "a")]
       ]
   -- , Sig (Name "Ordering") Star
-  -- , Class [] (Name "Eq") [Var "a"]
+  -- , Class [] (Name "Eq") [(Var "a", Nothing)]
   --     [ ClassMember (Name "eq") (var "a" %-> var "a" %-> typ "Boolean")
   --     ]
-  -- , Class [typ "Eq" %(var "a")] (Name "Ord") [Var "a"]
+  -- , Class [typ "Eq" %(var "a")] (Name "Ord") [(Var "a", Nothing)]
   --     [ ClassMember (Name "compare") (var "a" %-> var "a" %-> typ "Ordering")
   --     ]
   -- , Class [var "f" %(var "a"), var "g" %(var "a")] (Name "Conj") [Var "f", Var "g", Var "a"]
       -- []
-  , Sig (Name "Functor") ((Star %-> Star) %-> Constraint)
+  -- , Sig (Name "Functor") ((Star %-> Star) %-> Constraint)
   , Class [] (Name "Functor") [(Var "f", Nothing)]
       [ ClassMember (Name "map")
           (Forall
@@ -110,10 +111,10 @@ testDecls =
               %-> var "f" %(var "a")
               %-> var "f" %(var "b")))
       ]
-  -- , Data (Name "Dict") [Var "c"]
+  -- , Data (Name "Dict") [(Var "c", Nothing)]
   --     [ Ctr [] [var "c"] (Name "Dict") []
   --     ]
-  -- , Data (Name "FBox") [Var "f", Var "a"]
+  -- , Data (Name "FBox") [(Var "f", Nothing), (Var "a", Nothing)]
   --     [ Ctr [(Var "x", Nothing)] [typ "Functor" %(var "f")] (Name "FBox") [var "f" %(var "x"), var "x" %-> var "a"]
   --     ]
   -- , Class [] (Name "CFunctor")
@@ -133,7 +134,7 @@ testDecls =
   ]
 
 testTy :: Type
-testTy = Star
+testTy = Forall [(Var "a", Nothing)] (var "a")
   -- Forall [(Var "k", Nothing)]
   --   (typ "Proxy" %(var "k") %-> typ "String")
 
